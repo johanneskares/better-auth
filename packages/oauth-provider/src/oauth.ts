@@ -18,6 +18,7 @@ import type { BetterAuthPlugin } from "better-auth/types";
 import * as z from "zod";
 import type { AuthorizeEndpointSettings } from "./authorize";
 import { authorizeEndpoint, authorizeRedirectOnError } from "./authorize";
+import { claimsRequestParameterSchema } from "./claims-request";
 import { consentEndpoint } from "./consent";
 import { continueEndpoint } from "./continue";
 import { validateOAuthProviderExtensions } from "./extensions";
@@ -730,6 +731,10 @@ export const oauthProvider = <O extends OAuthOptions<Scope[]>>(options: O) => {
 						scope: z.string().optional().meta({
 							description:
 								"List of accept of accepted space-separated scopes. If none is provided, then all originally requested scopes are accepted.",
+						}),
+						claims: claimsRequestParameterSchema.optional().meta({
+							description:
+								"Accepted OIDC claims request object. If none is provided, then all originally requested claims are accepted.",
 						}),
 						oauth_query: z.string().optional().meta({
 							description: "The redirected page's query parameters",

@@ -41,10 +41,10 @@ const INVALID_ACCESS_TOKEN_ERROR_DESCRIPTION = "Invalid access token";
 const INVALID_ACCESS_TOKEN_WWW_AUTHENTICATE = `Bearer error="invalid_token", error_description="${INVALID_ACCESS_TOKEN_ERROR_DESCRIPTION}"`;
 
 function omitInternalAccessTokenClaims(payload: JWTPayload) {
-	const {
-		[REQUESTED_USERINFO_CLAIMS_TOKEN_CLAIM]: _requestedUserInfoClaims,
-		...publicPayload
-	} = payload;
+	// Internal carrier claims may drive provider endpoints, but RFC 7662
+	// introspection responses must not expose them to clients or resource servers.
+	const publicPayload = { ...payload };
+	delete publicPayload[REQUESTED_USERINFO_CLAIMS_TOKEN_CLAIM];
 	return publicPayload;
 }
 

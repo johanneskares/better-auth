@@ -50,6 +50,28 @@ export function getRequestedUserInfoClaims(value: unknown) {
 	return Array.from(new Set(Object.keys(userInfoClaims)));
 }
 
+export function filterClaimsRequestUserInfoClaims(
+	value: unknown,
+	allowedUserInfoClaims: string[],
+) {
+	const claimsRequest = parseClaimsRequestObject(value);
+	if (!claimsRequest) return undefined;
+	const allowedClaimSet = new Set(allowedUserInfoClaims);
+	const userInfoClaims = Object.fromEntries(
+		Object.entries(claimsRequest.userinfo ?? {}).filter(([claim]) =>
+			allowedClaimSet.has(claim),
+		),
+	);
+	const filteredClaimsRequest = Object.keys(userInfoClaims).length
+		? { ...claimsRequest, userinfo: userInfoClaims }
+		: Object.fromEntries(
+				Object.entries(claimsRequest).filter(([key]) => key !== "userinfo"),
+			);
+	return Object.keys(filteredClaimsRequest).length
+		? filteredClaimsRequest
+		: undefined;
+}
+
 function normalizeRequestedUserInfoClaims(value: unknown) {
 	if (!Array.isArray(value)) return [];
 	return Array.from(

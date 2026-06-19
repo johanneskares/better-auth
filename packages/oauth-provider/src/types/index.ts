@@ -820,11 +820,16 @@ export interface OAuthOptions<
 	 *
 	 * - `client_id` - The ID of the client.
 	 * - `scope` - The requested scopes.
+	 * - `claims` - The OIDC claims request, when the client requested specific
+	 *   claims. Consent pages should surface `claims.userinfo` names alongside
+	 *   scopes because accepted UserInfo claims can affect the UserInfo response.
 	 * - `code` - The authorization code.
 	 *
 	 * once the user consents, you need to call the `/oauth2/consent` endpoint
-	 * with the code and `accept: true` to complete the authorization. Which will
-	 * then return the client to the `redirect_uri` with the authorization code.
+	 * with the code and `accept: true` to complete the authorization. Include a
+	 * `claims` object if the user accepted only some requested UserInfo claims.
+	 * The endpoint will then return the client to the `redirect_uri` with the
+	 * authorization code.
 	 *
 	 * @example
 	 * ```ts
@@ -1851,6 +1856,11 @@ export type OAuthConsent<
 	userId: string;
 	resources?: string[];
 	referenceId?: string;
+	/**
+	 * OIDC UserInfo claim names consented from the authorization request's
+	 * `claims.userinfo` object.
+	 */
+	requestedUserInfoClaims?: string[];
 	scopes: Scopes;
 	createdAt: Date;
 	updatedAt: Date;

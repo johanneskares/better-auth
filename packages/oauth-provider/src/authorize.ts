@@ -6,6 +6,7 @@ import { generateRandomString, makeSignature } from "better-auth/crypto";
 import type { Verification } from "better-auth/db";
 import { APIError } from "better-call";
 import { UNSPECIFIED_ACR } from "./authentication-context";
+import { getRequestedUserInfoClaims } from "./claims-request";
 import { oAuthState } from "./oauth";
 import type { OAuthErrorCode, OAuthRedirectOnError } from "./oauth-endpoint";
 import { mapIssuesToOAuthError } from "./oauth-endpoint";
@@ -549,6 +550,7 @@ export async function authorizeEndpoint(
 		requestedScopes = client.scopes ?? opts.scopes ?? [];
 		query.scope = requestedScopes.join(" ");
 	}
+	const requestedUserInfoClaims = getRequestedUserInfoClaims(query.claims);
 
 	// Validate `resource` (RFC 8707 §2) against the configured resource
 	// entities — fail-fast at /authorize so clients see misconfigured
@@ -808,7 +810,10 @@ export async function authorizeEndpoint(
 
 	if (
 		!consent ||
-		!requestedScopes.every((val) => consent.scopes.includes(val))
+		!requestedScopes.every((val) => consent.scopes.includes(val)) ||
+		!requestedUserInfoClaims.every((claim) =>
+			(consent.requestedUserInfoClaims ?? []).includes(claim),
+		)
 	) {
 		if (promptNone) {
 			return redirectWithPromptNoneError(

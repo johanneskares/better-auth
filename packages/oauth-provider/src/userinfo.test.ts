@@ -13,6 +13,7 @@ import type { APIError } from "better-call";
 import type { JWK } from "jose";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { beforeAll, describe, expect, it } from "vitest";
+import { REQUESTED_USERINFO_CLAIMS_TOKEN_CLAIM } from "./claims-request";
 import { oauthProviderClient } from "./client";
 import { oauthProvider } from "./oauth";
 import type { OAuthClient } from "./types/oauth";
@@ -582,11 +583,12 @@ describe("oauth userinfo", async () => {
 			},
 		});
 		expect(tokens.data?.access_token).toBeDefined();
+		const accessToken = tokens.data?.access_token;
 		const userinfo = await client.$fetch<Record<string, string>>(
 			"/oauth2/userinfo",
 			{
 				headers: {
-					authorization: tokens.data?.access_token ?? "",
+					authorization: accessToken ?? "",
 				},
 			},
 		);
@@ -599,6 +601,27 @@ describe("oauth userinfo", async () => {
 		expect(userinfo.data?.given_name).toBeUndefined();
 		expect(userinfo.data?.family_name).toBeUndefined();
 		expect(userinfo.data?.email_verified).toBeUndefined();
+
+		const introspection = await client.oauth2.introspect(
+			{
+				client_id: oauthClient?.client_id,
+				client_secret: oauthClient?.client_secret,
+				token: accessToken!,
+				token_type_hint: "access_token",
+			},
+			{
+				headers: {
+					accept: "application/json",
+					"content-type": "application/x-www-form-urlencoded",
+				},
+			},
+		);
+		expect(introspection.data?.active).toBe(true);
+		expect(
+			(introspection.data as Record<string, unknown> | undefined)?.[
+				REQUESTED_USERINFO_CLAIMS_TOKEN_CLAIM
+			],
+		).toBeUndefined();
 	});
 
 	it("preserves requested UserInfo claims across refresh-token rotation", async () => {
@@ -650,11 +673,12 @@ describe("oauth userinfo", async () => {
 			validResource,
 		);
 		expect(tokens.data?.access_token).toBeDefined();
+		const accessToken = tokens.data?.access_token;
 		const userinfo = await client.$fetch<Record<string, string>>(
 			"/oauth2/userinfo",
 			{
 				headers: {
-					authorization: tokens.data?.access_token ?? "",
+					authorization: accessToken ?? "",
 				},
 			},
 		);
@@ -664,6 +688,27 @@ describe("oauth userinfo", async () => {
 			name: user.name,
 		});
 		expect(userinfo.data?.email).toBeUndefined();
+
+		const introspection = await client.oauth2.introspect(
+			{
+				client_id: oauthClient?.client_id,
+				client_secret: oauthClient?.client_secret,
+				token: accessToken!,
+				token_type_hint: "access_token",
+			},
+			{
+				headers: {
+					accept: "application/json",
+					"content-type": "application/x-www-form-urlencoded",
+				},
+			},
+		);
+		expect(introspection.data?.active).toBe(true);
+		expect(
+			(introspection.data as Record<string, unknown> | undefined)?.[
+				REQUESTED_USERINFO_CLAIMS_TOKEN_CLAIM
+			],
+		).toBeUndefined();
 	});
 
 	it("should pass provide scoped user information - profile only", async () => {
