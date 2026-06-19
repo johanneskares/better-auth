@@ -50,7 +50,7 @@ export function getRequestedUserInfoClaims(value: unknown) {
 	return Array.from(new Set(Object.keys(userInfoClaims)));
 }
 
-export function normalizeRequestedUserInfoClaims(value: unknown) {
+function normalizeRequestedUserInfoClaims(value: unknown) {
 	if (!Array.isArray(value)) return [];
 	return Array.from(
 		new Set(
