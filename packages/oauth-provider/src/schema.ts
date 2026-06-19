@@ -192,6 +192,28 @@ export const schema = {
 				type: "date",
 				required: false,
 			},
+			rotatedAt: {
+				type: "date",
+				required: false,
+			},
+			replacedByRefreshTokenId: {
+				type: "string",
+				required: false,
+				references: {
+					model: "oauthRefreshToken",
+					field: "id",
+					onDelete: "set null",
+				},
+				index: true,
+			},
+			rotationReplayResponse: {
+				type: "string",
+				required: false,
+			},
+			rotationReplayExpiresAt: {
+				type: "date",
+				required: false,
+			},
 			authTime: {
 				type: "date",
 				required: false,

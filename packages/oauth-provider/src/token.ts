@@ -1,6 +1,10 @@
 import type { GenericEndpointContext } from "@better-auth/core";
 import { APIError } from "better-auth/api";
-import { generateRandomString } from "better-auth/crypto";
+import {
+	generateRandomString,
+	symmetricDecrypt,
+	symmetricEncrypt,
+} from "better-auth/crypto";
 import { generateCodeChallenge } from "better-auth/oauth2";
 import { signJWT, toExpJWT } from "better-auth/plugins";
 import type { Session, User } from "better-auth/types";
@@ -66,6 +70,146 @@ export async function tokenEndpoint(
 				error: "unsupported_grant_type",
 			});
 	}
+}
+
+type TokenEndpointResponseBody = {
+	access_token: string;
+	expires_in: number;
+	expires_at: number;
+	token_type: "Bearer";
+	refresh_token?: string;
+	scope: string;
+	id_token?: string;
+} & Record<string, unknown>;
+
+type RefreshTokenRotationReplayRequest = {
+	scopes: string[];
+	resources?: string[];
+};
+
+type RefreshTokenRotationReplay = {
+	request: RefreshTokenRotationReplayRequest;
+	response: TokenEndpointResponseBody;
+};
+
+function tokenResponse(
+	ctx: GenericEndpointContext,
+	body: TokenEndpointResponseBody,
+) {
+	return ctx.json(body, {
+		headers: {
+			"Cache-Control": "no-store",
+			Pragma: "no-cache",
+		},
+	});
+}
+
+function isTokenEndpointResponseBody(
+	value: unknown,
+): value is TokenEndpointResponseBody {
+	if (!value || typeof value !== "object") {
+		return false;
+	}
+	const response = value as Record<string, unknown>;
+	return (
+		typeof response.access_token === "string" &&
+		typeof response.expires_in === "number" &&
+		typeof response.expires_at === "number" &&
+		response.token_type === "Bearer" &&
+		typeof response.scope === "string" &&
+		(response.refresh_token === undefined ||
+			typeof response.refresh_token === "string") &&
+		(response.id_token === undefined || typeof response.id_token === "string")
+	);
+}
+
+function isRefreshTokenRotationReplay(
+	value: unknown,
+): value is RefreshTokenRotationReplay {
+	if (!value || typeof value !== "object") {
+		return false;
+	}
+	const replay = value as Record<string, unknown>;
+	const request = replay.request as Record<string, unknown> | undefined;
+	return (
+		!!request &&
+		Array.isArray(request.scopes) &&
+		request.scopes.every((scope) => typeof scope === "string") &&
+		(request.resources === undefined ||
+			(Array.isArray(request.resources) &&
+				request.resources.every((resource) => typeof resource === "string"))) &&
+		isTokenEndpointResponseBody(replay.response)
+	);
+}
+
+function getRefreshTokenRotationReplayRequest(
+	ctx: GenericEndpointContext,
+	scopes: string[],
+): RefreshTokenRotationReplayRequest {
+	const resource: unknown = ctx.body.resource;
+	const resources =
+		typeof resource === "string"
+			? [resource]
+			: Array.isArray(resource) &&
+					resource.every((item) => typeof item === "string")
+				? resource
+				: undefined;
+	return {
+		scopes,
+		resources,
+	};
+}
+
+function sameStringArray(
+	left: string[] | undefined,
+	right: string[] | undefined,
+) {
+	if (left === undefined || right === undefined) {
+		return left === right;
+	}
+	if (left.length !== right.length) {
+		return false;
+	}
+	return left.every((value, index) => value === right[index]);
+}
+
+function sameRefreshTokenRotationReplayRequest(
+	left: RefreshTokenRotationReplayRequest,
+	right: RefreshTokenRotationReplayRequest,
+) {
+	return (
+		sameStringArray(left.scopes, right.scopes) &&
+		sameStringArray(left.resources, right.resources)
+	);
+}
+
+async function encryptRefreshTokenRotationReplay(
+	ctx: GenericEndpointContext,
+	request: RefreshTokenRotationReplayRequest,
+	response: TokenEndpointResponseBody,
+) {
+	return symmetricEncrypt({
+		key: ctx.context.secretConfig,
+		data: JSON.stringify({
+			request,
+			response,
+		} satisfies RefreshTokenRotationReplay),
+	});
+}
+
+async function decryptRefreshTokenRotationReplay(
+	ctx: GenericEndpointContext,
+	value: string,
+) {
+	const decrypted = await symmetricDecrypt({
+		key: ctx.context.secretConfig,
+		data: value,
+	});
+	const parsed: unknown = JSON.parse(decrypted);
+	if (!isRefreshTokenRotationReplay(parsed)) {
+		return undefined;
+	}
+	return parsed;
 }
 
 // User Jwt SHALL follow oAuth 2
@@ -382,6 +526,17 @@ async function createRefreshToken(
 	// with the winner's still-in-flight inserts. Tracked for a follow-up
 	// minor once the adapter contract exposes opt-in transactional
 	// rotation.
+	const rotatedAt = new Date(iat * 1000);
+	const rotationUpdate: Record<string, unknown> = {
+		revoked: rotatedAt,
+		rotatedAt,
+	};
+	const reuseInterval = opts.refreshTokenReuseInterval ?? 0;
+	if (reuseInterval > 0) {
+		rotationUpdate.rotationReplayExpiresAt = new Date(
+			(iat + reuseInterval) * 1000,
+		);
+	}
 	const won = await ctx.context.adapter.incrementOne<{ id: string }>({
 		model: "oauthRefreshToken",
 		where: [
@@ -389,9 +544,7 @@ async function createRefreshToken(
 			{ field: "revoked", operator: "eq", value: null },
 		],
 		increment: {},
-		set: {
-			revoked: new Date(iat * 1000),
-		},
+		set: rotationUpdate,
 	});
 
 	if (!won) {
@@ -412,6 +565,73 @@ async function createRefreshToken(
 		id: refreshToken.id,
 		token: await encodeRefreshToken(opts, token, sessionId),
 	};
+}
+
+async function storeRefreshTokenRotationReplay(
+	ctx: GenericEndpointContext,
+	opts: OAuthOptions<Scope[]>,
+	originalRefresh: OAuthRefreshToken<Scope[]> & { id: string },
+	replacementRefresh: { id: string },
+	scopes: string[],
+	response: TokenEndpointResponseBody,
+) {
+	if ((opts.refreshTokenReuseInterval ?? 0) <= 0) {
+		return;
+	}
+	await ctx.context.adapter.update({
+		model: "oauthRefreshToken",
+		where: [{ field: "id", value: originalRefresh.id }],
+		update: {
+			replacedByRefreshTokenId: replacementRefresh.id,
+			rotationReplayResponse: await encryptRefreshTokenRotationReplay(
+				ctx,
+				getRefreshTokenRotationReplayRequest(ctx, scopes),
+				response,
+			),
+		},
+	});
+}
+
+async function getRefreshTokenRotationReplay(
+	ctx: GenericEndpointContext,
+	refreshToken: OAuthRefreshToken<Scope[]>,
+	scopes: string[],
+) {
+	if (!isWithinRefreshTokenReuseInterval(refreshToken)) {
+		return undefined;
+	}
+	if (!refreshToken.rotationReplayResponse) {
+		return undefined;
+	}
+
+	try {
+		const replay = await decryptRefreshTokenRotationReplay(
+			ctx,
+			refreshToken.rotationReplayResponse,
+		);
+		if (
+			!replay ||
+			!sameRefreshTokenRotationReplayRequest(
+				replay.request,
+				getRefreshTokenRotationReplayRequest(ctx, scopes),
+			)
+		) {
+			return undefined;
+		}
+		return replay.response;
+	} catch {
+		return undefined;
+	}
+}
+
+function isWithinRefreshTokenReuseInterval(
+	refreshToken: OAuthRefreshToken<Scope[]>,
+) {
+	return (
+		!!refreshToken.rotatedAt &&
+		!!refreshToken.rotationReplayExpiresAt &&
+		refreshToken.rotationReplayExpiresAt >= new Date()
+	);
 }
 
 /**
@@ -614,24 +834,28 @@ async function createUserTokens(
 			: undefined,
 	]);
 
-	return ctx.json(
-		{
-			...customFields,
-			access_token: accessToken,
-			expires_in: exp - iat,
-			expires_at: exp,
-			token_type: "Bearer" as const,
-			refresh_token: refreshToken?.token,
-			scope: scopes.join(" "),
-			id_token: idToken,
-		},
-		{
-			headers: {
-				"Cache-Control": "no-store",
-				Pragma: "no-cache",
-			},
-		},
-	);
+	const responseBody: TokenEndpointResponseBody = {
+		...customFields,
+		access_token: accessToken,
+		expires_in: exp - iat,
+		expires_at: exp,
+		token_type: "Bearer",
+		refresh_token: refreshToken?.token,
+		scope: scopes.join(" "),
+		id_token: idToken,
+	};
+	if (existingRefreshToken?.id && refreshToken?.id) {
+		await storeRefreshTokenRotationReplay(
+			ctx,
+			opts,
+			existingRefreshToken,
+			refreshToken,
+			scopes,
+			responseBody,
+		);
+	}
+
+	return tokenResponse(ctx, responseBody);
 }
 
 /** Checks verification value */
@@ -1066,14 +1290,6 @@ async function handleRefreshTokenGrant(
 			error: "invalid_grant",
 		});
 	}
-	// Replay revoke (RFC 9700 §4.14: tear down the family)
-	if (refreshToken.revoked) {
-		await invalidateRefreshFamily(ctx, client_id, refreshToken.userId);
-		throw new APIError("BAD_REQUEST", {
-			error_description: "invalid refresh token",
-			error: "invalid_grant",
-		});
-	}
 
 	// Check session scopes
 	const scopes = refreshToken?.scopes;
@@ -1089,15 +1305,38 @@ async function handleRefreshTokenGrant(
 			}
 		}
 	}
+	const effectiveScopes = requestedScopes ?? scopes;
 
 	const client = await validateClientCredentials(
 		ctx,
 		opts,
 		client_id,
 		client_secret, // Optional for refresh_grant but required on confidential clients
-		requestedScopes ?? scopes,
+		effectiveScopes,
 		"refresh_token",
 	);
+
+	if (refreshToken.revoked) {
+		const replay = await getRefreshTokenRotationReplay(
+			ctx,
+			refreshToken,
+			effectiveScopes,
+		);
+		if (replay) {
+			return tokenResponse(ctx, replay);
+		}
+		if (isWithinRefreshTokenReuseInterval(refreshToken)) {
+			throw new APIError("BAD_REQUEST", {
+				error_description: "invalid refresh token",
+				error: "invalid_grant",
+			});
+		}
+		await invalidateRefreshFamily(ctx, client_id, refreshToken.userId);
+		throw new APIError("BAD_REQUEST", {
+			error_description: "invalid refresh token",
+			error: "invalid_grant",
+		});
+	}
 
 	const user = await ctx.context.internalAdapter.findUserById(
 		refreshToken.userId,
@@ -1117,7 +1356,7 @@ async function handleRefreshTokenGrant(
 	// Generate new tokens
 	return createUserTokens(ctx, opts, {
 		client,
-		scopes: requestedScopes ?? scopes,
+		scopes: effectiveScopes,
 		user,
 		grantType: "refresh_token",
 		referenceId: refreshToken.referenceId,

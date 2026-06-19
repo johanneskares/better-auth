@@ -502,6 +502,16 @@ The refresh token grant enables clients to update their access token without nee
 
 This implementation currently issues a new refresh token for every refresh request.
 
+Set `refreshTokenReuseInterval` to allow a rotated refresh token to be reused for a short interval and receive the same token response. This helps clients recover from duplicate refresh requests, lost responses, or retrying requests without minting another token pair.
+
+```ts title="auth.ts"
+oauthProvider({
+  refreshTokenReuseInterval: 30, // seconds
+})
+```
+
+The default is `0`, which keeps strict replay detection. Once the reuse interval expires, using the old refresh token is treated as replay and invalidates the refresh-token family.
+
 ### Consent Endpoint
 
 Accept or deny user consent for a set of scopes. Note that when denying scopes, the consent cancels and pre-existing consent remains. To remove consent, delete that user's "oauthConsent" for that client.
@@ -1063,6 +1073,7 @@ Each token type and grant type can independently can set a default expiration.
 * `m2mAccessTokenExpiresIn` defaults 1 hour
 * `idTokenExpiresIn` defaults 10 hours
 * `refreshTokenExpiresIn` defaults 30 days
+* `refreshTokenReuseInterval` defaults 0 seconds
 * `codeExpiresIn` defaults 10 minutes
 
 Additionally, Access Tokens can set lower expirations based on scopes. This is useful for higher-privilege scopes that require shorter expiration times. The earliest expiration will take precedence. If not specified, the default will take place. Note: values should be lower than the defaults `accessTokenExpiresIn` and `m2mAccessTokenExpiresIn`.
@@ -1880,7 +1891,34 @@ export const oauthRefreshTokenTableFields = [
   {
     name: "revoked",
     type: "Date",
-    description: "Timestamp when the token was revoked",
+    description: "Timestamp when the token stopped being active",
+    isOptional: true,
+  },
+  {
+    name: "rotatedAt",
+    type: "Date",
+    description: "Timestamp when the token was consumed by rotation",
+    isOptional: true,
+  },
+  {
+    name: "replacedByRefreshTokenId",
+    type: "string",
+    description: "ID of the refresh token that replaced this token",
+    isForeignKey: true,
+    isOptional: true,
+    references: { model: "oauthRefreshToken", field: "id", onDelete: "set null" },
+  },
+  {
+    name: "rotationReplayResponse",
+    type: "string",
+    description:
+      "Encrypted token response replayed during the configured refresh-token reuse interval",
+    isOptional: true,
+  },
+  {
+    name: "rotationReplayExpiresAt",
+    type: "Date",
+    description: "Timestamp when the cached rotation response stops being replayable",
     isOptional: true,
   },
   {

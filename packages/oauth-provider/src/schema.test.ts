@@ -8,6 +8,7 @@ describe("oauth provider schema", () => {
 			["oauthRefreshToken", "clientId"],
 			["oauthRefreshToken", "sessionId"],
 			["oauthRefreshToken", "userId"],
+			["oauthRefreshToken", "replacedByRefreshTokenId"],
 			["oauthAccessToken", "clientId"],
 			["oauthAccessToken", "sessionId"],
 			["oauthAccessToken", "userId"],

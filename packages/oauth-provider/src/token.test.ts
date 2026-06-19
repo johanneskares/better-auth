@@ -20,6 +20,18 @@ import { verificationValueSchema } from "./types/zod";
 
 type MakeRequired<T, K extends keyof T> = Omit<T, K> & Required<Pick<T, K>>;
 
+type OAuthTokenResponse = {
+	access_token?: string;
+	id_token?: string;
+	refresh_token?: string;
+	expires_in?: number;
+	expires_at?: number;
+	token_type?: string;
+	scope?: string;
+	refresh_call?: string;
+	[key: string]: unknown;
+};
+
 describe("oauth token - authorization_code", async () => {
 	const authServerBaseUrl = "http://localhost:3000";
 	const rpBaseUrl = "http://localhost:5000";
@@ -473,7 +485,7 @@ describe("oauth token - refresh_token", async () => {
 
 	const { headers } = await signInWithTestUser();
 	const client = createAuthClient({
-		plugins: [oauthProviderClient(), jwtClient()],
+		plugins: [oauthProviderClient()],
 		baseURL: authServerBaseUrl,
 		fetchOptions: {
 			customFetchImpl,
@@ -1284,6 +1296,249 @@ describe("oauth token - refresh_token", async () => {
 		const replay = await refresh();
 		const replayErr = replay.error as { error?: string } | null;
 		expect(replayErr?.error).toBe("invalid_grant");
+	});
+});
+
+describe("oauth token - refresh_token reuse interval", async () => {
+	const authServerBaseUrl = "http://localhost:3000";
+	const rpBaseUrl = "http://localhost:5000";
+	const validAudience = "https://reuse-api.example.com";
+	const otherAudience = "https://other-reuse-api.example.com";
+	let refreshTokenResponseCalls = 0;
+	const {
+		auth: authorizationServer,
+		signInWithTestUser,
+		customFetchImpl,
+	} = await getTestInstance({
+		baseURL: authServerBaseUrl,
+		plugins: [
+			jwt({
+				jwt: {
+					issuer: authServerBaseUrl,
+				},
+			}),
+			oauthProvider({
+				loginPage: "/login",
+				consentPage: "/consent",
+				validAudiences: [validAudience, otherAudience],
+				refreshTokenReuseInterval: 30,
+				customTokenResponseFields({ grantType }) {
+					if (grantType !== "refresh_token") {
+						return {};
+					}
+					refreshTokenResponseCalls += 1;
+					return {
+						refresh_call: `${refreshTokenResponseCalls}`,
+					};
+				},
+				silenceWarnings: {
+					oauthAuthServerConfig: true,
+					openidConfig: true,
+				},
+			}),
+		],
+	});
+
+	const { headers } = await signInWithTestUser();
+	const client = createAuthClient({
+		plugins: [oauthProviderClient()],
+		baseURL: authServerBaseUrl,
+		fetchOptions: {
+			customFetchImpl,
+			headers,
+		},
+	});
+
+	let oauthClient: OAuthClient | null;
+
+	const providerId = "test";
+	const redirectUri = `${rpBaseUrl}/api/auth/oauth2/callback/${providerId}`;
+	const state = "123";
+
+	async function createOAuthClient() {
+		const response = await authorizationServer.api.adminCreateOAuthClient({
+			headers,
+			body: {
+				grant_types: [
+					"authorization_code",
+					"client_credentials",
+					"refresh_token",
+				],
+				redirect_uris: [redirectUri],
+				skip_consent: true,
+			},
+		});
+		expect(response?.client_id).toBeDefined();
+		expect(response?.client_secret).toBeDefined();
+		return response;
+	}
+
+	async function authorizeForRefreshToken(scopes: string[]) {
+		if (!oauthClient?.client_id || !oauthClient?.client_secret) {
+			throw Error("beforeAll not run properly");
+		}
+		const codeVerifier = generateRandomString(32);
+		const authUrl = await createAuthorizationURL({
+			id: providerId,
+			options: {
+				clientId: oauthClient.client_id,
+				clientSecret: oauthClient.client_secret,
+				redirectURI: redirectUri,
+			},
+			redirectURI: "",
+			authorizationEndpoint: `${authServerBaseUrl}/api/auth/oauth2/authorize`,
+			state,
+			scopes,
+			codeVerifier,
+		});
+
+		let callbackRedirectUrl = "";
+		await client.$fetch(authUrl.toString(), {
+			onError(context) {
+				callbackRedirectUrl = context.response.headers.get("Location") || "";
+			},
+		});
+		const callbackUrl = new URL(callbackRedirectUrl);
+		const { body, headers } = createAuthorizationCodeRequest({
+			code: callbackUrl.searchParams.get("code")!,
+			codeVerifier,
+			redirectURI: redirectUri,
+			options: {
+				clientId: oauthClient.client_id,
+				clientSecret: oauthClient.client_secret,
+				redirectURI: redirectUri,
+			},
+		});
+
+		const tokens = await client.$fetch<OAuthTokenResponse>("/oauth2/token", {
+			method: "POST",
+			body,
+			headers,
+		});
+		expect(tokens.data?.refresh_token).toBeDefined();
+		return tokens.data!;
+	}
+
+	async function refresh(refreshToken: string, params?: { resource?: string }) {
+		if (!oauthClient?.client_id || !oauthClient?.client_secret) {
+			throw Error("beforeAll not run properly");
+		}
+		const { body, headers } = createRefreshAccessTokenRequest({
+			refreshToken,
+			options: {
+				clientId: oauthClient.client_id,
+				clientSecret: oauthClient.client_secret,
+				redirectURI: redirectUri,
+			},
+			resource: params?.resource,
+		});
+		return client.$fetch<OAuthTokenResponse>("/oauth2/token", {
+			method: "POST",
+			body,
+			headers,
+		});
+	}
+
+	/**
+	 * @see https://github.com/better-auth/better-auth/issues/8512
+	 */
+	it("replays the same response inside the refresh token reuse interval", async () => {
+		oauthClient = await createOAuthClient();
+		refreshTokenResponseCalls = 0;
+		const tokens = await authorizeForRefreshToken([
+			"openid",
+			"profile",
+			"offline_access",
+		]);
+
+		const firstRefresh = await refresh(tokens.refresh_token!);
+		expect(firstRefresh.error).toBeNull();
+		expect(firstRefresh.data?.refresh_token).toBeDefined();
+		expect(firstRefresh.data?.refresh_call).toBe("1");
+
+		const replay = await refresh(tokens.refresh_token!);
+		expect(replay.error).toBeNull();
+		expect(replay.data).toEqual(firstRefresh.data);
+		expect(refreshTokenResponseCalls).toBe(1);
+
+		const next = await refresh(firstRefresh.data!.refresh_token!);
+		expect(next.error).toBeNull();
+		expect(next.data?.refresh_token).toBeDefined();
+		expect(next.data?.refresh_token).not.toEqual(
+			firstRefresh.data?.refresh_token,
+		);
+	});
+
+	/**
+	 * @see https://github.com/better-auth/better-auth/issues/8512
+	 */
+	it("does not replay a cached response for a different resource", async () => {
+		oauthClient = await createOAuthClient();
+		const tokens = await authorizeForRefreshToken([
+			"openid",
+			"profile",
+			"offline_access",
+		]);
+
+		const firstRefresh = await refresh(tokens.refresh_token!, {
+			resource: validAudience,
+		});
+		expect(firstRefresh.error).toBeNull();
+		expect(firstRefresh.data?.refresh_token).toBeDefined();
+
+		const mismatchedReplay = await refresh(tokens.refresh_token!, {
+			resource: otherAudience,
+		});
+		expect((mismatchedReplay.error as { error?: string } | null)?.error).toBe(
+			"invalid_grant",
+		);
+
+		const next = await refresh(firstRefresh.data!.refresh_token!);
+		expect(next.error).toBeNull();
+		expect(next.data?.refresh_token).toBeDefined();
+	});
+
+	/**
+	 * @see https://github.com/better-auth/better-auth/issues/8512
+	 */
+	it("invalidates the family after the reuse interval expires", async () => {
+		oauthClient = await createOAuthClient();
+		const tokens = await authorizeForRefreshToken([
+			"openid",
+			"profile",
+			"offline_access",
+		]);
+		const firstRefresh = await refresh(tokens.refresh_token!);
+		expect(firstRefresh.error).toBeNull();
+		expect(firstRefresh.data?.refresh_token).toBeDefined();
+
+		const context = await authorizationServer.$context;
+		const rotatedRows = await context.adapter.findMany<{
+			id: string;
+			replacedByRefreshTokenId?: string | null;
+		}>({
+			model: "oauthRefreshToken",
+			where: [{ field: "clientId", value: oauthClient!.client_id }],
+		});
+		const rotatedRow = rotatedRows.find((row) => row.replacedByRefreshTokenId);
+		expect(rotatedRow?.id).toBeDefined();
+		await context.adapter.update({
+			model: "oauthRefreshToken",
+			where: [{ field: "id", value: rotatedRow!.id }],
+			update: {
+				rotationReplayExpiresAt: new Date(0),
+			},
+		});
+
+		const replay = await refresh(tokens.refresh_token!);
+		expect((replay.error as { error?: string } | null)?.error).toBe(
+			"invalid_grant",
+		);
+
+		const childReplay = await refresh(firstRefresh.data!.refresh_token!);
+		expect((childReplay.error as { error?: string } | null)?.error).toBe(
+			"invalid_grant",
+		);
 	});
 });
 
