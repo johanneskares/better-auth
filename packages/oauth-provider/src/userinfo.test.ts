@@ -5,6 +5,7 @@ import {
 	createAuthorizationURL,
 	deriveDpopAth,
 	deriveDpopJkt,
+	refreshAccessTokenRequest,
 } from "better-auth/oauth2";
 import { jwt } from "better-auth/plugins/jwt";
 import { getTestInstance } from "better-auth/test";
@@ -185,6 +186,34 @@ describe("oauth userinfo", async () => {
 			code: url.searchParams.get("code")!,
 			codeVerifier,
 			resource,
+		});
+	}
+
+	async function refreshAccessToken(refreshToken: string) {
+		if (!oauthClient?.client_id || !oauthClient?.client_secret) {
+			throw Error("beforeAll not run properly");
+		}
+		const { body, headers } = await refreshAccessTokenRequest({
+			refreshToken,
+			options: {
+				clientId: oauthClient.client_id,
+				clientSecret: oauthClient.client_secret,
+				redirectURI: redirectUri,
+			},
+		});
+		return client.$fetch<{
+			access_token?: string;
+			id_token?: string;
+			refresh_token?: string;
+			expires_in?: number;
+			expires_at?: number;
+			token_type?: string;
+			scope?: string;
+			[key: string]: unknown;
+		}>("/oauth2/token", {
+			method: "POST",
+			body,
+			headers,
 		});
 	}
 
@@ -538,6 +567,103 @@ describe("oauth userinfo", async () => {
 		expect(userinfo.data?.family_name).toBeUndefined();
 		expect(userinfo.data?.email).toBeUndefined();
 		expect(userinfo.data?.email_verified).toBeUndefined();
+	});
+
+	it("returns explicitly requested UserInfo claims without granting the full scope bundle", async () => {
+		const tokens = await getTokens({
+			scopes: ["openid"],
+			additionalParams: {
+				claims: JSON.stringify({
+					userinfo: {
+						name: { essential: true },
+						email: null,
+					},
+				}),
+			},
+		});
+		expect(tokens.data?.access_token).toBeDefined();
+		const userinfo = await client.$fetch<Record<string, string>>(
+			"/oauth2/userinfo",
+			{
+				headers: {
+					authorization: tokens.data?.access_token ?? "",
+				},
+			},
+		);
+
+		expect(userinfo.data).toMatchObject({
+			sub: user.id,
+			name: user.name,
+			email: user.email,
+		});
+		expect(userinfo.data?.given_name).toBeUndefined();
+		expect(userinfo.data?.family_name).toBeUndefined();
+		expect(userinfo.data?.email_verified).toBeUndefined();
+	});
+
+	it("preserves requested UserInfo claims across refresh-token rotation", async () => {
+		const tokens = await getTokens({
+			scopes: ["openid", "offline_access"],
+			additionalParams: {
+				claims: JSON.stringify({
+					userinfo: {
+						name: { essential: true },
+					},
+				}),
+			},
+		});
+		expect(tokens.data?.refresh_token).toBeDefined();
+
+		const refreshedTokens = await refreshAccessToken(
+			tokens.data?.refresh_token ?? "",
+		);
+		expect(refreshedTokens.data?.access_token).toBeDefined();
+		const userinfo = await client.$fetch<Record<string, string>>(
+			"/oauth2/userinfo",
+			{
+				headers: {
+					authorization: refreshedTokens.data?.access_token ?? "",
+				},
+			},
+		);
+
+		expect(userinfo.data).toMatchObject({
+			sub: user.id,
+			name: user.name,
+		});
+		expect(userinfo.data?.given_name).toBeUndefined();
+		expect(userinfo.data?.email).toBeUndefined();
+	});
+
+	it("returns requested UserInfo claims from JWT access tokens", async () => {
+		const tokens = await getTokens(
+			{
+				scopes: ["openid"],
+				additionalParams: {
+					claims: JSON.stringify({
+						userinfo: {
+							name: { essential: true },
+						},
+					}),
+				},
+			},
+			validResource,
+		);
+		expect(tokens.data?.access_token).toBeDefined();
+		const userinfo = await client.$fetch<Record<string, string>>(
+			"/oauth2/userinfo",
+			{
+				headers: {
+					authorization: tokens.data?.access_token ?? "",
+				},
+			},
+		);
+
+		expect(userinfo.data).toMatchObject({
+			sub: user.id,
+			name: user.name,
+		});
+		expect(userinfo.data?.email).toBeUndefined();
 	});
 
 	it("should pass provide scoped user information - profile only", async () => {

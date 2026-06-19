@@ -173,6 +173,7 @@ export function oidcServerMetadata(
 		...authMetadata,
 		claims_supported:
 			opts?.advertisedMetadata?.claims_supported ?? opts?.claims ?? [],
+		claims_parameter_supported: true,
 		userinfo_endpoint: `${baseURL}/oauth2/userinfo`,
 		subject_types_supported: opts.pairwiseSecret
 			? ["public", "pairwise"]

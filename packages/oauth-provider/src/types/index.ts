@@ -132,6 +132,13 @@ export interface OAuthTokenIssueParams {
 	/** Full original authorized resources for the grant, used to seed refresh tokens. */
 	originalResources?: string[];
 	/**
+	 * OIDC UserInfo claim names requested by the authorization request's
+	 * `claims.userinfo` object. The authorization server persists these names so
+	 * refresh-token rotation and opaque access tokens continue honoring the same
+	 * UserInfo request contract.
+	 */
+	requestedUserInfoClaims?: string[];
+	/**
 	 * Additional JWT access-token claims for this single issuance.
 	 *
 	 * JWT-only: these are baked into the signed token at mint. Opaque access
@@ -349,6 +356,11 @@ export interface OAuthUserInfoExtensionInput {
 	scopes: string[];
 	jwt: JWTPayload;
 	client?: SchemaClient<Scope[]>;
+	/**
+	 * Claim names explicitly requested through the OIDC `claims.userinfo`
+	 * authorization request parameter.
+	 */
+	requestedClaims: string[];
 }
 
 /**
@@ -1014,6 +1026,11 @@ export interface OAuthOptions<
 		scopes: Scopes;
 		/** The access token payload used in the /userinfo request */
 		jwt: JWTPayload;
+		/**
+		 * Claim names explicitly requested through the OIDC `claims.userinfo`
+		 * authorization request parameter.
+		 */
+		requestedClaims: string[];
 	}) => Awaitable<Record<string, any>>;
 	/**
 	 * Custom claims attached to OIDC id tokens.
@@ -1434,6 +1451,14 @@ export interface OAuthAuthorizationQuery {
 	 */
 	nonce?: string;
 	/**
+	 * OIDC Claims request parameter. In an authorization request it is a
+	 * form-encoded JSON string; Request Object resolvers may provide the parsed
+	 * object form.
+	 *
+	 * @see https://openid.net/specs/openid-connect-core-1_0.html#ClaimsParameter
+	 */
+	claims?: string | Record<string, unknown>;
+	/**
 	 * RFC 9449 authorization request parameter. When present, the authorization
 	 * code is bound to this JWK thumbprint and the token request must present a
 	 * matching DPoP proof.
@@ -1759,6 +1784,11 @@ export interface OAuthOpaqueAccessToken<
 	 */
 	resources?: string[];
 	/**
+	 * OIDC UserInfo claim names requested by the authorization request's
+	 * `claims.userinfo` object.
+	 */
+	requestedUserInfoClaims?: string[];
+	/**
 	 * RFC 7800 `cnf` confirmation that sender-constrains this access token (for
 	 * example DPoP `{ jkt }`). Surfaced as the `cnf` claim at introspection.
 	 */
@@ -1798,6 +1828,11 @@ export interface OAuthRefreshToken<
 	 * Resources allowed for this refresh token
 	 */
 	resources?: string[];
+	/**
+	 * OIDC UserInfo claim names requested by the authorization request's
+	 * `claims.userinfo` object. Carried forward on rotation.
+	 */
+	requestedUserInfoClaims?: string[];
 	/**
 	 * RFC 7800 `cnf` confirmation that sender-constrains this refresh-token
 	 * family (for example DPoP `{ jkt }`). Carried forward on rotation.

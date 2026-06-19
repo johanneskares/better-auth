@@ -776,7 +776,9 @@ The UserInfo endpoint returns different claims based on the scopes that were gra
 * `profile`: Returns `name`, `picture`, `given_name`, `family_name`
 * `email`: Returns `email` and `email_verified`
 
-The `customUserInfoClaims` function receives the user object, requested scopes array, and the passed access token, allowing you to add additional information to the response.
+The endpoint also honors the OIDC `claims` request parameter for UserInfo. Claims listed under `claims.userinfo` are added to the scope-requested claims when Better Auth or your custom claim logic can supply them. Missing values are omitted from the JSON response rather than returned as `null` or an empty string.
+
+The `customUserInfoClaims` function receives the user object, requested scopes array, requested UserInfo claim names, and the passed access token, allowing you to add additional information to the response.
 
 ### Well-Known
 
@@ -1182,7 +1184,7 @@ oauthProvider({
 
 Internally supported claims include \["sub", "iss", "aud", "exp", "iat", "sid", "scope", "azp"].
 
-ID token and UserInfo claims should be namespaced when possible to avoid potential future conflicts. In the authorization code flow, `profile` and `email` request UserInfo claims; they are not added to the ID token unless you add them with `customIdTokenClaims`.
+ID token and UserInfo claims should be namespaced when possible to avoid potential future conflicts. In the authorization code flow, `profile`, `email`, and `claims.userinfo` request UserInfo claims; they are not added to the ID token unless you add them with `customIdTokenClaims`.
 
 `customIdTokenClaims` is additive for protocol-owned ID token claims. Reserved names such as `iss`, `sub`, `aud`, token lifetime claims, `nonce`, `sid`, hash claims, `auth_time`, `acr`, `amr`, and `azp` are stripped at issuance with a warning log. Use namespaced claim names such as `https://example.com/org` for application-specific data.
 
@@ -1207,9 +1209,12 @@ oauthProvider({
     };
   },
   // Additional user info claims
-  customUserInfoClaims: ({ user, scopes, jwt }) => {
+  customUserInfoClaims: ({ user, scopes, requestedClaims, jwt }) => {
     return {
       locale: "en-GB",
+      ...(requestedClaims.includes("website")
+        ? { website: "https://example.com" }
+        : {}),
     };
   },
 })
@@ -1498,7 +1503,7 @@ Three claim surfaces resolve contributions in a fixed order. Across all three, t
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Access token | extension `claims.accessToken` \< per-issuance `accessTokenClaims` \< `customAccessTokenClaims` \< per-resource `customClaims`        | reserved RFC 9068 names (`iss`, `sub`, `aud`, `exp`, `iat`, `jti`, `client_id`, `scope`, `auth_time`, `acr`, `amr`), stripped before signing                                                      |
 | ID token     | subject/authentication claims \< `customIdTokenClaims`; extension and per-issuance `idTokenClaims` are reserved-filtered and additive | reserved OIDC/JWT names (`iss`, `sub`, `aud`, `exp`, `nbf`, `iat`, `jti`, `nonce`, `sid`, `at_hash`, `c_hash`, `s_hash`, `auth_time`, `acr`, `amr`, `azp`) and scope-derived UserInfo claim names |
-| UserInfo     | base identity claims \< extension `claims.userInfo` (additive only) \< `customUserInfoClaims`                                         | `sub` (re-pinned last)                                                                                                                                                                            |
+| UserInfo     | scope and `claims.userinfo` identity claims \< extension `claims.userInfo` (additive only) \< `customUserInfoClaims`                  | `sub` (re-pinned last)                                                                                                                                                                            |
 
 Per-issuance `accessTokenClaims` are JWT-only: an opaque access token persists no per-issuance claims, so they do not reappear at introspection. A claim that must be visible at opaque-token introspection belongs in a grant-type-stable `claims.accessToken` contributor, which the introspection path re-derives.
 

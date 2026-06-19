@@ -9,6 +9,7 @@ import { APIError } from "better-call";
 import type { JSONWebKeySet, JWTPayload } from "jose";
 import { createLocalJWKSet, jwtVerify } from "jose";
 import { resolveAccessTokenClaims } from "./claims";
+import { REQUESTED_USERINFO_CLAIMS_TOKEN_CLAIM } from "./claims-request";
 import {
 	getResourceCustomClaims,
 	isAudienceClaimAllowed,
@@ -38,6 +39,14 @@ import {
 
 const INVALID_ACCESS_TOKEN_ERROR_DESCRIPTION = "Invalid access token";
 const INVALID_ACCESS_TOKEN_WWW_AUTHENTICATE = `Bearer error="invalid_token", error_description="${INVALID_ACCESS_TOKEN_ERROR_DESCRIPTION}"`;
+
+function omitInternalAccessTokenClaims(payload: JWTPayload) {
+	const {
+		[REQUESTED_USERINFO_CLAIMS_TOKEN_CLAIM]: _requestedUserInfoClaims,
+		...publicPayload
+	} = payload;
+	return publicPayload;
+}
 
 /**
  * IMPORTANT NOTES:
@@ -404,6 +413,12 @@ async function validateOpaqueAccessToken(
 		iat: Math.floor(new Date(accessToken.createdAt).getTime() / 1000),
 		scope: accessToken.scopes?.join(" "),
 		token_type: confirmationTokenType(accessToken.confirmation),
+		...(accessToken.requestedUserInfoClaims?.length
+			? {
+					[REQUESTED_USERINFO_CLAIMS_TOKEN_CLAIM]:
+						accessToken.requestedUserInfoClaims,
+				}
+			: {}),
 		...(accessToken.confirmation ? { cnf: accessToken.confirmation } : {}),
 	} as JWTPayload;
 }
@@ -670,7 +685,9 @@ export async function introspectEndpoint(
 					token,
 					client.clientId,
 				);
-				return resolveIntrospectionSub(ctx, opts, payload, client);
+				return omitInternalAccessTokenClaims(
+					await resolveIntrospectionSub(ctx, opts, payload, client),
+				);
 			} catch (error) {
 				if (error instanceof APIError) {
 					if (token_type_hint === "access_token") {

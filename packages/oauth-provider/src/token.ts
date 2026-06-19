@@ -17,6 +17,10 @@ import {
 	UNSPECIFIED_ACR,
 } from "./authentication-context";
 import { resolveAccessTokenClaims } from "./claims";
+import {
+	getRequestedUserInfoClaims,
+	REQUESTED_USERINFO_CLAIMS_TOKEN_CLAIM,
+} from "./claims-request";
 import { getDpopProofJwt, getEndpointUrl } from "./dpop";
 import {
 	collectExtensionIdTokenClaims,
@@ -242,6 +246,11 @@ async function createJwtAccessToken(
 		 * contributor cannot forge it.
 		 */
 		confirmation?: Confirmation;
+		/**
+		 * OIDC `claims.userinfo` names carried for the UserInfo endpoint. Stored
+		 * as an AS-owned private claim because JWT access tokens have no DB row.
+		 */
+		requestedUserInfoClaims?: string[];
 	},
 ) {
 	const iat = overrides?.iat ?? Math.floor(Date.now() / 1000);
@@ -272,6 +281,12 @@ async function createJwtAccessToken(
 			client_id: client.clientId,
 			azp: client.clientId,
 			scope: scopes.join(" "),
+			...(overrides?.requestedUserInfoClaims?.length
+				? {
+						[REQUESTED_USERINFO_CLAIMS_TOKEN_CLAIM]:
+							overrides.requestedUserInfoClaims,
+					}
+				: {}),
 			sid: overrides?.sid,
 			iss: jwtPluginOptions?.jwt?.issuer ?? ctx.context.baseURL,
 			iat,
@@ -479,6 +494,7 @@ async function createOpaqueAccessToken(
 	authorizationCodeId?: string,
 	refreshId?: string,
 	confirmation?: Confirmation,
+	requestedUserInfoClaims?: string[],
 ) {
 	const iat = payload.iat ?? Math.floor(Date.now() / 1000);
 	const exp = payload?.exp ?? iat + (opts.accessTokenExpiresIn ?? 3600);
@@ -497,6 +513,9 @@ async function createOpaqueAccessToken(
 			resources,
 			refreshId,
 			confirmation,
+			requestedUserInfoClaims: requestedUserInfoClaims?.length
+				? requestedUserInfoClaims
+				: undefined,
 			scopes,
 			createdAt: new Date(iat * 1000),
 			expiresAt: new Date(exp * 1000),
@@ -592,6 +611,7 @@ async function createRefreshToken(
 	authTime?: Date,
 	resources?: string[],
 	confirmation?: Confirmation,
+	requestedUserInfoClaims?: string[],
 ) {
 	const iat = payload.iat ?? Math.floor(Date.now() / 1000);
 	const exp = payload?.exp ?? iat + (opts.refreshTokenExpiresIn ?? 2592000);
@@ -613,6 +633,9 @@ async function createRefreshToken(
 		authorizationCodeId,
 		authTime,
 		confirmation,
+		requestedUserInfoClaims: requestedUserInfoClaims?.length
+			? requestedUserInfoClaims
+			: undefined,
 		scopes,
 		resources,
 		createdAt: new Date(iat * 1000),
@@ -913,6 +936,10 @@ async function createUserTokens(
 			verificationValue,
 			refreshToken: existingRefreshToken,
 		}));
+	const requestedUserInfoClaims =
+		params.requestedUserInfoClaims ??
+		existingRefreshToken?.requestedUserInfoClaims ??
+		[];
 
 	// Refresh token may need to be created beforehand for id field
 	const earlyRefreshToken =
@@ -934,6 +961,7 @@ async function createUserTokens(
 					authTime,
 					refreshResources,
 					confirmation,
+					requestedUserInfoClaims,
 				)
 			: undefined;
 
@@ -975,6 +1003,7 @@ async function createUserTokens(
 						signingKeyId: grantIssuance.signingKeyId,
 						accessTokenClaims,
 						confirmation,
+						requestedUserInfoClaims,
 					},
 				)
 			: createOpaqueAccessToken(
@@ -993,6 +1022,7 @@ async function createUserTokens(
 					params.authorizationCodeId,
 					earlyRefreshToken?.id,
 					confirmation,
+					requestedUserInfoClaims,
 				),
 		earlyRefreshToken
 			? earlyRefreshToken
@@ -1014,6 +1044,7 @@ async function createUserTokens(
 						authTime,
 						refreshResources,
 						confirmation,
+						requestedUserInfoClaims,
 					)
 				: undefined,
 	]);
@@ -1340,6 +1371,9 @@ async function handleAuthorizationCodeGrant(
 		verificationValue.authTime != null
 			? normalizeTimestampValue(verificationValue.authTime)
 			: resolveSessionAuthTime(session);
+	const requestedUserInfoClaims = getRequestedUserInfoClaims(
+		verificationValue.query.claims,
+	);
 
 	return createUserTokens(ctx, opts, {
 		client,
@@ -1352,6 +1386,7 @@ async function handleAuthorizationCodeGrant(
 		authTime,
 		verificationValue,
 		authorizationCodeId,
+		requestedUserInfoClaims,
 		resources: effectiveResources,
 		originalResources: authorizedResources,
 	});
@@ -1602,5 +1637,6 @@ async function handleRefreshTokenGrant(
 		refreshToken,
 		resources: resources ?? refreshToken.resources,
 		authTime,
+		requestedUserInfoClaims: refreshToken.requestedUserInfoClaims,
 	});
 }

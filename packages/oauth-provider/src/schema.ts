@@ -360,6 +360,10 @@ export const schema = {
 				type: "string[]",
 				required: false,
 			},
+			requestedUserInfoClaims: {
+				type: "string[]",
+				required: false,
+			},
 			expiresAt: {
 				type: "date",
 			},
@@ -447,6 +451,10 @@ export const schema = {
 				index: true,
 			},
 			resources: {
+				type: "string[]",
+				required: false,
+			},
+			requestedUserInfoClaims: {
 				type: "string[]",
 				required: false,
 			},

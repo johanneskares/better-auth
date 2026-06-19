@@ -1,6 +1,7 @@
 import type { GenericEndpointContext } from "@better-auth/core";
 import { logger } from "@better-auth/core/env";
 import type { User } from "better-auth/types";
+import { REQUESTED_USERINFO_CLAIMS_TOKEN_CLAIM } from "./claims-request";
 import { collectExtensionAccessTokenClaims } from "./extensions";
 import type { OAuthOptions, SchemaClient, Scope } from "./types";
 import type { GrantType } from "./types/oauth";
@@ -29,6 +30,7 @@ const RESERVED_ACCESS_TOKEN_CLAIMS = new Set([
 	"acr",
 	"amr",
 	"cnf",
+	REQUESTED_USERINFO_CLAIMS_TOKEN_CLAIM,
 ]);
 
 /**

@@ -864,6 +864,8 @@ function serializeAuthorizationQuery(query: OAuthAuthorizationQuery) {
 			for (const v of value) {
 				params.append(key, String(v));
 			}
+		} else if (key === "claims" && typeof value === "object") {
+			params.set(key, JSON.stringify(value));
 		} else {
 			params.set(key, String(value));
 		}

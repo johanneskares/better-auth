@@ -8,6 +8,7 @@ import {
 	parseAccessTokenAuthorization,
 } from "better-auth/oauth2";
 import type { User } from "better-auth/types";
+import { getRequestedUserInfoClaimsFromTokenPayload } from "./claims-request";
 import { getDpopProofJwt, getEndpointUrl } from "./dpop";
 import {
 	collectExtensionUserInfoClaims,
@@ -22,24 +23,45 @@ import { getClient, resolveSubjectIdentifier } from "./utils";
  *
  * @see https://openid.net/specs/openid-connect-core-1_0.html#NormalClaims
  */
-function userNormalClaims(user: User, scopes: string[]) {
+const PROFILE_USER_CLAIMS = [
+	"name",
+	"picture",
+	"given_name",
+	"family_name",
+] as const;
+const EMAIL_USER_CLAIMS = ["email", "email_verified"] as const;
+
+function userNormalClaims(
+	user: User,
+	scopes: string[],
+	requestedClaims: string[] = [],
+) {
 	const name = user.name.split(" ").filter((v) => v !== "");
-	const profile = {
+	const profileClaims = {
 		name: user.name ?? undefined,
 		picture: user.image ?? undefined,
 		given_name: name.length > 1 ? name.slice(0, -1).join(" ") : undefined,
 		family_name: name.length > 1 ? name.at(-1) : undefined,
 	};
-	const email = {
+	const emailClaims = {
 		email: user.email ?? undefined,
 		email_verified: user.emailVerified ?? false,
 	};
+	const requestedClaimSet = new Set(requestedClaims);
+	const claims: Record<string, unknown> = { sub: user.id ?? undefined };
 
-	return {
-		sub: user.id ?? undefined,
-		...(scopes.includes("profile") ? profile : {}),
-		...(scopes.includes("email") ? email : {}),
-	};
+	for (const claim of PROFILE_USER_CLAIMS) {
+		if (scopes.includes("profile") || requestedClaimSet.has(claim)) {
+			claims[claim] = profileClaims[claim];
+		}
+	}
+	for (const claim of EMAIL_USER_CLAIMS) {
+		if (scopes.includes("email") || requestedClaimSet.has(claim)) {
+			claims[claim] = emailClaims[claim];
+		}
+	}
+
+	return claims;
 }
 
 /**
@@ -179,7 +201,8 @@ export async function userInfoEndpoint(
 		});
 	}
 
-	const baseUserClaims = userNormalClaims(user, scopes ?? []);
+	const requestedClaims = getRequestedUserInfoClaimsFromTokenPayload(jwt);
+	const baseUserClaims = userNormalClaims(user, scopes ?? [], requestedClaims);
 	const clientId = (jwt.client_id ?? jwt.azp) as string | undefined;
 	// Load the client only when something needs it: pairwise subject resolution
 	// or a UserInfo claim extension. The token was already validated against its
@@ -201,11 +224,17 @@ export async function userInfoEndpoint(
 				scopes,
 				jwt,
 				client: client ?? undefined,
+				requestedClaims,
 			})
 		: {};
 	const additionalInfoUserClaims =
 		opts.customUserInfoClaims && scopes?.length
-			? await opts.customUserInfoClaims({ user, scopes, jwt })
+			? await opts.customUserInfoClaims({
+					user,
+					scopes,
+					jwt,
+					requestedClaims,
+				})
 			: {};
 	return {
 		...baseUserClaims,
